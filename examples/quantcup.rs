@@ -68,8 +68,8 @@ fn convert_to_order(id: &mut u128, record: Record) -> OrderType {
                 "Ask" => Side::Ask,
                 _ => panic!("the side can only be 'Bid' or 'Ask'"),
             },
-            qty: record.3,
-            price: record.2,
+            qty: record.3 as f64,
+            price: record.2 as f64,
         }
     }
 }

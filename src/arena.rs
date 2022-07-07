@@ -22,26 +22,26 @@ impl OrderArena {
         for i in 0..capacity {
             list.orders.push(LimitOrder {
                 id: 0,
-                price: 0,
-                qty: 0,
+                price: 0.0,
+                qty: 0.0,
             });
             list.free.push(i);
         }
         list
     }
 
-    pub fn get(&self, id: u128) -> Option<(u64, usize)> {
+    pub fn get(&self, id: u128) -> Option<(f64, usize)> {
         self.order_map.get(&id).map(|i| (self.orders[*i].price, *i))
     }
 
     #[cfg(test)]
-    pub fn get_full(&self, id: u128) -> Option<(u64, u64, usize)> {
+    pub fn get_full(&self, id: u128) -> Option<(f64, f64, usize)> {
         self.order_map
             .get(&id)
             .map(|i| (self.orders[*i].price, self.orders[*i].qty, *i))
     }
 
-    pub fn insert(&mut self, id: u128, price: u64, qty: u64) -> usize {
+    pub fn insert(&mut self, id: u128, price: f64, qty: f64) -> usize {
         match self.free.pop() {
             None => {
                 self.orders.push(LimitOrder { id, price, qty });
@@ -64,7 +64,7 @@ impl OrderArena {
         if let Some(idx) = self.order_map.remove(id) {
             if let Some(mut ord) = self.orders.get_mut(idx) {
                 self.free.push(idx);
-                ord.qty = 0;
+                ord.qty = 0.0;
                 return true;
             }
         }
@@ -105,30 +105,30 @@ mod test {
         for capacity in 0_u64..30 {
             let mut arena = OrderArena::new(capacity as usize);
             for i in 0_u64..capacity {
-                arena.insert(i as u128, i * 100 + i, 2 * i);
+                arena.insert(i as u128, (i * 100 + i) as f64, (2 * i) as f64);
             }
             for i in 0_u64..capacity {
                 assert_eq!(
                     arena.get_full(i as u128),
-                    Some((i * 100 + i, 2 * i, (capacity - i) as usize - 1))
+                    Some(((i * 100 + i) as f64, (2 * i) as f64, (capacity - i) as usize - 1))
                 );
             }
             for i in capacity..2 * capacity {
                 assert_eq!(arena.get_full(i as u128), None);
             }
             for i in capacity..2 * capacity {
-                arena.insert(i as u128, i * 100 + i, 2 * i);
+                arena.insert(i as u128, (i * 100 + i) as f64, (2 * i) as f64);
             }
             for i in 0..capacity {
                 assert_eq!(
                     arena.get_full(i as u128),
-                    Some((i * 100 + i, 2 * i, (capacity - i) as usize - 1))
+                    Some(((i * 100 + i) as f64, (2 * i) as f64, (capacity - i) as usize - 1))
                 );
             }
             for i in capacity..2 * capacity {
                 assert_eq!(
                     arena.get_full(i as u128),
-                    Some((i * 100 + i, 2 * i, i as usize,))
+                    Some(((i * 100 + i) as f64, (2 * i) as f64, i as usize,))
                 );
             }
         }

@@ -7,6 +7,7 @@ use crate::models::{
 
 const DEFAULT_ARENA_CAPACITY: usize = 10_000;
 const DEFAULT_QUEUE_CAPACITY: usize = 10;
+const DEFAULT_PRECISION: u128 = 8;
 
 /// An order book that executes orders serially through the [`execute`] method.
 ///
@@ -14,22 +15,23 @@ const DEFAULT_QUEUE_CAPACITY: usize = 10;
 #[derive(Debug)]
 pub struct OrderBook {
     last_trade: Option<Trade>,
-    traded_volume: u64,
-    min_ask: Option<u64>,
-    max_bid: Option<u64>,
+    traded_volume: f64,
+    min_ask: Option<f64>,
+    max_bid: Option<f64>,
     asks: BTreeMap<u64, Vec<usize>>,
     bids: BTreeMap<u64, Vec<usize>>,
     arena: OrderArena,
     default_queue_capacity: usize,
+    precision: f64,
     track_stats: bool,
 }
 
 impl Default for OrderBook {
     /// Create an instance representing a single order book, with stats tracking
-    /// disabled, a default arena capacity of 10,000 and a default queue
-    /// capacity of 10.
+    /// disabled, a default arena capacity of 10,000, a default queue
+    /// capacity of 10 and price precision to 8 significant digits.
     fn default() -> Self {
-        Self::new(DEFAULT_ARENA_CAPACITY, DEFAULT_QUEUE_CAPACITY, false)
+        Self::new(DEFAULT_ARENA_CAPACITY, DEFAULT_QUEUE_CAPACITY, DEFAULT_PRECISION, false)
     }
 }
 
@@ -50,17 +52,19 @@ impl OrderBook {
     pub fn new(
         arena_capacity: usize,
         queue_capacity: usize,
+        precision: u128,
         track_stats: bool,
     ) -> Self {
         Self {
             last_trade: None,
-            traded_volume: 0,
+            traded_volume: 0.0,
             min_ask: None,
             max_bid: None,
             asks: BTreeMap::new(),
             bids: BTreeMap::new(),
             arena: OrderArena::new(arena_capacity),
             default_queue_capacity: queue_capacity,
+            precision: (10.0 as f64).powf(precision as f64),
             track_stats,
         }
     }
@@ -79,20 +83,20 @@ impl OrderBook {
 
     /// Return the lowest ask price, if present.
     #[inline(always)]
-    pub fn min_ask(&self) -> Option<u64> {
+    pub fn min_ask(&self) -> Option<f64> {
         self.min_ask
     }
 
     /// Return the highest bid price, if present.
     #[inline(always)]
-    pub fn max_bid(&self) -> Option<u64> {
+    pub fn max_bid(&self) -> Option<f64> {
         self.max_bid
     }
 
     /// Return the difference of the lowest ask and highest bid, if both are
     /// present.
     #[inline(always)]
-    pub fn spread(&self) -> Option<u64> {
+    pub fn spread(&self) -> Option<f64> {
         match (self.max_bid, self.min_ask) {
             (Some(b), Some(a)) => Some(a - b),
             _ => None,
@@ -111,7 +115,7 @@ impl OrderBook {
     /// Return the total traded volume for all the trades that occurred while
     /// the stats tracking was active.
     #[inline(always)]
-    pub fn traded_volume(&self) -> u64 {
+    pub fn traded_volume(&self) -> f64 {
         self.traded_volume
     }
 
@@ -125,27 +129,31 @@ impl OrderBook {
         let mut asks: Vec<BookLevel> = Vec::with_capacity(levels);
         let mut bids: Vec<BookLevel> = Vec::with_capacity(levels);
 
-        for (ask_price, queue) in self.asks.iter() {
-            let mut qty = 0;
+        for (vect_ask_price, queue) in self.asks.iter() {
+            let mut qty = 0.0;
+            let ask_price = (*vect_ask_price as f64) / self.precision;
+
             for idx in queue {
                 qty += self.arena[*idx].qty;
             }
-            if qty > 0 {
+            if qty > 0.0 {
                 asks.push(BookLevel {
-                    price: *ask_price,
+                    price: ask_price,
                     qty,
                 });
             }
         }
 
-        for (bid_price, queue) in self.bids.iter() {
-            let mut qty = 0;
+        for (vect_bid_price, queue) in self.bids.iter() {
+            let mut qty = 0.0;
+            let bid_price = (*vect_bid_price as f64) / self.precision;
+
             for idx in queue {
                 qty += self.arena[*idx].qty;
             }
-            if qty > 0 {
+            if qty > 0.0 {
                 bids.push(BookLevel {
-                    price: *bid_price,
+                    price: bid_price,
                     qty,
                 });
             }
@@ -180,8 +188,7 @@ impl OrderBook {
                     avg_price: fills
                         .iter()
                         .map(|fm| fm.price * fm.qty)
-                        .sum::<u64>() as f64
-                        / (filled_qty as f64),
+                        .sum::<f64>() / filled_qty,
                     last_qty: last_fill.qty,
                     last_price: last_fill.price,
                 });
@@ -199,8 +206,7 @@ impl OrderBook {
                     avg_price: fills
                         .iter()
                         .map(|fm| fm.price * fm.qty)
-                        .sum::<u64>() as f64
-                        / (filled_qty as f64),
+                        .sum::<f64>() / filled_qty,
                     last_qty: last_fill.qty,
                     last_price: last_fill.price,
                 });
@@ -265,13 +271,14 @@ impl OrderBook {
 
     fn cancel(&mut self, id: u128) -> bool {
         if let Some((price, idx)) = self.arena.get(id) {
-            if let Some(ref mut queue) = self.asks.get_mut(&price) {
+            let vect_price = (self.precision * price) as u64;
+            if let Some(ref mut queue) = self.asks.get_mut(&vect_price) {
                 if let Some(i) = queue.iter().position(|i| *i == idx) {
                     queue.remove(i);
                 }
                 self.update_min_ask();
             }
-            if let Some(ref mut queue) = self.bids.get_mut(&price) {
+            if let Some(ref mut queue) = self.bids.get_mut(&vect_price) {
                 if let Some(i) = queue.iter().position(|i| *i == idx) {
                     queue.remove(i);
                 }
@@ -285,51 +292,52 @@ impl OrderBook {
         &mut self,
         id: u128,
         side: Side,
-        qty: u64,
-    ) -> (Vec<FillMetadata>, bool, u64) {
+        qty: f64,
+    ) -> (Vec<FillMetadata>, bool, f64) {
         let mut partial = false;
-        let remaining_qty;
+        let remaining_qty: f64;
         let mut fills = Vec::new();
 
         match side {
             Side::Bid => {
                 remaining_qty = self.match_with_asks(id, qty, &mut fills, None);
-                if remaining_qty > 0 {
+                if remaining_qty > 0.0 {
                     partial = true;
                 }
             }
             Side::Ask => {
                 remaining_qty = self.match_with_bids(id, qty, &mut fills, None);
-                if remaining_qty > 0 {
+                if remaining_qty > 0.0 {
                     partial = true;
                 }
             }
         }
 
-        (fills, partial, qty - remaining_qty)
+        (fills, partial, (((qty - remaining_qty) * self.precision) as u64) as f64 / self.precision)
     }
 
     fn limit(
         &mut self,
         id: u128,
         side: Side,
-        qty: u64,
-        price: u64,
-    ) -> (Vec<FillMetadata>, bool, u64) {
+        qty: f64,
+        price: f64,
+    ) -> (Vec<FillMetadata>, bool, f64) {
         let mut partial = false;
-        let remaining_qty;
+        let remaining_qty: f64;
         let mut fills: Vec<FillMetadata> = Vec::new();
 
         match side {
             Side::Bid => {
                 remaining_qty =
                     self.match_with_asks(id, qty, &mut fills, Some(price));
-                if remaining_qty > 0 {
+                if remaining_qty > 0.0 {
                     partial = true;
                     let index = self.arena.insert(id, price, remaining_qty);
                     let queue_capacity = self.default_queue_capacity;
+                    let vect_price = (self.precision * price) as u64;
                     self.bids
-                        .entry(price)
+                        .entry(vect_price)
                         .or_insert_with(|| Vec::with_capacity(queue_capacity))
                         .push(index);
                     match self.max_bid {
@@ -346,7 +354,7 @@ impl OrderBook {
             Side::Ask => {
                 remaining_qty =
                     self.match_with_bids(id, qty, &mut fills, Some(price));
-                if remaining_qty > 0 {
+                if remaining_qty > 0.0 {
                     partial = true;
                     let index = self.arena.insert(id, price, remaining_qty);
                     if let Some(a) = self.min_ask {
@@ -355,8 +363,9 @@ impl OrderBook {
                         }
                     }
                     let queue_capacity = self.default_queue_capacity;
+                    let vect_price = (self.precision * price) as u64;
                     self.asks
-                        .entry(price)
+                        .entry(vect_price)
                         .or_insert_with(|| Vec::with_capacity(queue_capacity))
                         .push(index);
                     match self.min_ask {
@@ -372,32 +381,33 @@ impl OrderBook {
             }
         }
 
-        (fills, partial, qty - remaining_qty)
+        (fills, partial, (((qty - remaining_qty) * self.precision) as u64) as f64 / self.precision)
     }
 
     fn match_with_asks(
         &mut self,
         id: u128,
-        qty: u64,
+        qty: f64,
         fills: &mut Vec<FillMetadata>,
-        limit_price: Option<u64>,
-    ) -> u64 {
+        limit_price: Option<f64>,
+    ) -> f64 {
         let mut remaining_qty = qty;
         let mut update_bid_ask = false;
-        for (ask_price, queue) in self.asks.iter_mut() {
+        for (vect_ask_price, queue) in self.asks.iter_mut() {
+            let ask_price = (*vect_ask_price as f64) / self.precision;
             if queue.is_empty() {
                 continue;
             }
             if (update_bid_ask || self.min_ask.is_none()) && !queue.is_empty() {
-                self.min_ask = Some(*ask_price);
+                self.min_ask = Some(ask_price);
                 update_bid_ask = false;
             }
             if let Some(lp) = limit_price {
-                if lp < *ask_price {
+                if lp < ask_price {
                     break;
                 }
             }
-            if remaining_qty == 0 {
+            if remaining_qty == 0.0 {
                 break;
             }
             let filled_qty = Self::process_queue(
@@ -421,26 +431,27 @@ impl OrderBook {
     fn match_with_bids(
         &mut self,
         id: u128,
-        qty: u64,
+        qty: f64,
         fills: &mut Vec<FillMetadata>,
-        limit_price: Option<u64>,
-    ) -> u64 {
+        limit_price: Option<f64>,
+    ) -> f64 {
         let mut remaining_qty = qty;
         let mut update_bid_ask = false;
-        for (bid_price, queue) in self.bids.iter_mut().rev() {
+        for (vect_bid_price, queue) in self.bids.iter_mut().rev() {
+            let bid_price = (*vect_bid_price as f64) / self.precision;
             if queue.is_empty() {
                 continue;
             }
             if (update_bid_ask || self.max_bid.is_none()) && !queue.is_empty() {
-                self.max_bid = Some(*bid_price);
+                self.max_bid = Some(bid_price);
                 update_bid_ask = false;
             }
             if let Some(lp) = limit_price {
-                if lp > *bid_price {
+                if lp > bid_price {
                     break;
                 }
             }
-            if remaining_qty == 0 {
+            if remaining_qty == 0.0 {
                 break;
             }
             let filled_qty = Self::process_queue(
@@ -465,7 +476,7 @@ impl OrderBook {
         let mut cur_asks = self.asks.iter().filter(|(_, q)| !q.is_empty());
         self.min_ask = match cur_asks.next() {
             None => None,
-            Some((p, _)) => Some(*p),
+            Some((p, _)) => Some((*p as f64) / self.precision),
         };
     }
 
@@ -474,34 +485,34 @@ impl OrderBook {
             self.bids.iter().rev().filter(|(_, q)| !q.is_empty());
         self.max_bid = match cur_bids.next() {
             None => None,
-            Some((p, _)) => Some(*p),
+            Some((p, _)) => Some((*p as f64) / self.precision),
         };
     }
 
     fn process_queue(
         arena: &mut OrderArena,
         opposite_orders: &mut Vec<usize>,
-        remaining_qty: u64,
+        remaining_qty: f64,
         id: u128,
         side: Side,
         fills: &mut Vec<FillMetadata>,
-    ) -> u64 {
+    ) -> f64 {
         let mut qty_to_fill = remaining_qty;
-        let mut filled_qty = 0;
+        let mut filled_qty: f64 = 0.0;
         let mut filled_index = None;
 
         for (index, head_order_idx) in opposite_orders.iter_mut().enumerate() {
-            if qty_to_fill == 0 {
+            if qty_to_fill == 0.0 {
                 break;
             }
             let head_order = &mut arena[*head_order_idx];
             let traded_price = head_order.price;
             let available_qty = head_order.qty;
-            if available_qty == 0 {
+            if available_qty == 0.0 {
                 filled_index = Some(index);
                 continue;
             }
-            let traded_quantity: u64;
+            let traded_quantity: f64;
             let filled;
 
             if qty_to_fill >= available_qty {
@@ -511,7 +522,7 @@ impl OrderBook {
                 filled = true;
             } else {
                 traded_quantity = qty_to_fill;
-                qty_to_fill = 0;
+                qty_to_fill = 0.0;
                 filled = false;
             }
             head_order.qty -= traded_quantity;
@@ -599,7 +610,7 @@ mod test {
         assert_eq!(ob._asks(), BTreeMap::new());
         assert_eq!(ob._bids(), BTreeMap::new());
         assert_eq!(ob.spread(), None);
-        assert_eq!(ob.traded_volume(), 0);
+        assert_eq!(ob.traded_volume(), 0.0);
         assert_eq!(
             ob.depth(2),
             BookDepth {
@@ -617,43 +628,43 @@ mod test {
             let (ob, results) = init_ob(vec![OrderType::Limit {
                 id: 0,
                 side: *bid_ask,
-                qty: 12,
-                price: 395,
+                qty: 12.0,
+                price: 395.0,
             }]);
             assert_eq!(results, vec![OrderEvent::Placed { id: 0 }]);
             if *bid_ask == Side::Bid {
                 assert_eq!(ob.min_ask(), None);
-                assert_eq!(ob.max_bid(), Some(395));
+                assert_eq!(ob.max_bid(), Some(395.0));
                 assert_eq!(ob._asks(), BTreeMap::new());
-                assert_eq!(ob._bids(), init_book(vec![(395, 9999)]));
+                assert_eq!(ob._bids(), init_book(vec![(39500000000, 9999)]));
                 assert_eq!(ob.spread(), None);
-                assert_eq!(ob.traded_volume(), 0);
+                assert_eq!(ob.traded_volume(), 0.0);
                 assert_eq!(
                     ob.depth(3),
                     BookDepth {
                         levels: 3,
                         asks: Vec::new(),
                         bids: vec![BookLevel {
-                            price: 395,
-                            qty: 12
+                            price: 395.0,
+                            qty: 12.0
                         }],
                     }
                 );
                 assert_eq!(ob.last_trade(), None);
             } else {
-                assert_eq!(ob.min_ask(), Some(395));
+                assert_eq!(ob.min_ask(), Some(395.0));
                 assert_eq!(ob.max_bid(), None);
-                assert_eq!(ob._asks(), init_book(vec![(395, 9999)]));
+                assert_eq!(ob._asks(), init_book(vec![(39500000000, 9999)]));
                 assert_eq!(ob._bids(), BTreeMap::new());
                 assert_eq!(ob.spread(), None);
-                assert_eq!(ob.traded_volume(), 0);
+                assert_eq!(ob.traded_volume(), 0.0);
                 assert_eq!(
                     ob.depth(4),
                     BookDepth {
                         levels: 4,
                         asks: vec![BookLevel {
-                            price: 395,
-                            qty: 12
+                            price: 395.0,
+                            qty: 12.0
                         }],
                         bids: Vec::new()
                     }
@@ -670,14 +681,14 @@ mod test {
                 OrderType::Limit {
                     id: 0,
                     side: *bid_ask,
-                    qty: 12,
-                    price: 395,
+                    qty: 12.0,
+                    price: 395.0,
                 },
                 OrderType::Limit {
                     id: 1,
                     side: *ask_bid,
-                    qty: 2,
-                    price: 398,
+                    qty: 2.0,
+                    price: 398.0,
                 },
             ]);
             if *bid_ask == Side::Bid {
@@ -688,20 +699,20 @@ mod test {
                         OrderEvent::Placed { id: 1 }
                     ]
                 );
-                assert_eq!(ob.min_ask(), Some(398));
-                assert_eq!(ob.max_bid(), Some(395));
-                assert_eq!(ob._asks(), init_book(vec![(398, 9998)]));
-                assert_eq!(ob._bids(), init_book(vec![(395, 9999)]));
-                assert_eq!(ob.spread(), Some(3));
-                assert_eq!(ob.traded_volume(), 0);
+                assert_eq!(ob.min_ask(), Some(398.0));
+                assert_eq!(ob.max_bid(), Some(395.0));
+                assert_eq!(ob._asks(), init_book(vec![(39800000000, 9998)]));
+                assert_eq!(ob._bids(), init_book(vec![(39500000000, 9999)]));
+                assert_eq!(ob.spread(), Some(3.0));
+                assert_eq!(ob.traded_volume(), 0.0);
                 assert_eq!(
                     ob.depth(4),
                     BookDepth {
                         levels: 4,
-                        asks: vec![BookLevel { price: 398, qty: 2 }],
+                        asks: vec![BookLevel { price: 398.0, qty: 2.0 }],
                         bids: vec![BookLevel {
-                            price: 395,
-                            qty: 12
+                            price: 395.0,
+                            qty: 12.0
                         }],
                     }
                 );
@@ -713,31 +724,31 @@ mod test {
                         OrderEvent::Placed { id: 0 },
                         OrderEvent::Filled {
                             id: 1,
-                            filled_qty: 2,
+                            filled_qty: 2.0,
                             fills: vec![FillMetadata {
                                 order_1: 1,
                                 order_2: 0,
-                                qty: 2,
-                                price: 395,
+                                qty: 2.0,
+                                price: 395.0,
                                 taker_side: *ask_bid,
                                 total_fill: false,
                             }],
                         }
                     ]
                 );
-                assert_eq!(ob.min_ask(), Some(395));
+                assert_eq!(ob.min_ask(), Some(395.0));
                 assert_eq!(ob.max_bid(), None);
-                assert_eq!(ob._asks(), init_book(vec![(395, 9999)]));
+                assert_eq!(ob._asks(), init_book(vec![(39500000000, 9999)]));
                 assert_eq!(ob._bids(), init_book(vec![]));
                 assert_eq!(ob.spread(), None);
-                assert_eq!(ob.traded_volume(), 2);
+                assert_eq!(ob.traded_volume(), 2.0);
                 assert_eq!(
                     ob.depth(4),
                     BookDepth {
                         levels: 4,
                         asks: vec![BookLevel {
-                            price: 395,
-                            qty: 10,
+                            price: 395.0,
+                            qty: 10.0,
                         }],
                         bids: Vec::new(),
                     }
@@ -745,10 +756,10 @@ mod test {
                 assert_eq!(
                     ob.last_trade(),
                     Some(Trade {
-                        total_qty: 2,
+                        total_qty: 2.0,
                         avg_price: 395.0,
-                        last_qty: 2,
-                        last_price: 395,
+                        last_qty: 2.0,
+                        last_price: 395.0,
                     })
                 );
             }
@@ -762,14 +773,14 @@ mod test {
                 OrderType::Limit {
                     id: 0,
                     side: *bid_ask,
-                    qty: 12,
-                    price: 395,
+                    qty: 12.0,
+                    price: 395.0,
                 },
                 OrderType::Limit {
                     id: 1,
                     side: *bid_ask,
-                    qty: 2,
-                    price: 395,
+                    qty: 2.0,
+                    price: 395.0,
                 },
             ]);
             assert_eq!(
@@ -781,43 +792,43 @@ mod test {
             );
             if *bid_ask == Side::Bid {
                 assert_eq!(ob.min_ask(), None);
-                assert_eq!(ob.max_bid(), Some(395));
+                assert_eq!(ob.max_bid(), Some(395.0));
                 assert_eq!(ob._asks(), BTreeMap::new());
                 assert_eq!(
                     ob._bids(),
-                    init_book(vec![(395, 9999), (395, 9998)])
+                    init_book(vec![(39500000000, 9999), (39500000000, 9998)])
                 );
                 assert_eq!(ob.spread(), None);
-                assert_eq!(ob.traded_volume(), 0);
+                assert_eq!(ob.traded_volume(), 0.0);
                 assert_eq!(
                     ob.depth(3),
                     BookDepth {
                         levels: 3,
                         asks: Vec::new(),
                         bids: vec![BookLevel {
-                            price: 395,
-                            qty: 14
+                            price: 395.0,
+                            qty: 14.0
                         }],
                     }
                 );
                 assert_eq!(ob.last_trade(), None);
             } else {
-                assert_eq!(ob.min_ask(), Some(395));
+                assert_eq!(ob.min_ask(), Some(395.0));
                 assert_eq!(ob.max_bid(), None);
                 assert_eq!(
                     ob._asks(),
-                    init_book(vec![(395, 9999), (395, 9998)])
+                    init_book(vec![(39500000000, 9999), (39500000000, 9998)])
                 );
                 assert_eq!(ob._bids(), BTreeMap::new());
                 assert_eq!(ob.spread(), None);
-                assert_eq!(ob.traded_volume(), 0);
+                assert_eq!(ob.traded_volume(), 0.0);
                 assert_eq!(
                     ob.depth(3),
                     BookDepth {
                         levels: 3,
                         asks: vec![BookLevel {
-                            price: 395,
-                            qty: 14
+                            price: 395.0,
+                            qty: 14.0
                         }],
                         bids: Vec::new(),
                     }
@@ -834,14 +845,14 @@ mod test {
                 OrderType::Limit {
                     id: 0,
                     side: *bid_ask,
-                    qty: 12,
-                    price: 395,
+                    qty: 12.0,
+                    price: 395.0,
                 },
                 OrderType::Limit {
                     id: 1,
                     side: *bid_ask,
-                    qty: 2,
-                    price: 398,
+                    qty: 2.0,
+                    price: 398.0,
                 },
             ]);
             assert_eq!(
@@ -853,19 +864,19 @@ mod test {
             );
             if *bid_ask == Side::Bid {
                 assert_eq!(ob.min_ask(), None);
-                assert_eq!(ob.max_bid(), Some(398));
+                assert_eq!(ob.max_bid(), Some(398.0));
                 assert_eq!(ob._asks(), BTreeMap::new());
                 assert_eq!(
                     ob._bids(),
-                    init_book(vec![(398, 9998), (395, 9999)])
+                    init_book(vec![(39800000000, 9998), (39500000000, 9999)])
                 );
                 assert_eq!(ob.spread(), None);
             } else {
-                assert_eq!(ob.min_ask(), Some(395));
+                assert_eq!(ob.min_ask(), Some(395.0));
                 assert_eq!(ob.max_bid(), None);
                 assert_eq!(
                     ob._asks(),
-                    init_book(vec![(398, 9998), (395, 9999)])
+                    init_book(vec![(39800000000, 9998), (39500000000, 9999)])
                 );
                 assert_eq!(ob._bids(), BTreeMap::new());
                 assert_eq!(ob.spread(), None);
@@ -880,20 +891,20 @@ mod test {
                 OrderType::Limit {
                     id: 0,
                     side: *bid_ask,
-                    qty: 12,
-                    price: 395,
+                    qty: 12.0,
+                    price: 395.0,
                 },
                 OrderType::Limit {
                     id: 1,
                     side: *ask_bid,
-                    qty: 2,
-                    price: 399,
+                    qty: 2.0,
+                    price: 399.0,
                 },
                 OrderType::Limit {
                     id: 2,
                     side: *bid_ask,
-                    qty: 2,
-                    price: 398,
+                    qty: 2.0,
+                    price: 398.0,
                 },
             ]);
             if *bid_ask == Side::Bid {
@@ -905,14 +916,14 @@ mod test {
                         OrderEvent::Placed { id: 2 }
                     ]
                 );
-                assert_eq!(ob.min_ask(), Some(399));
-                assert_eq!(ob.max_bid(), Some(398));
-                assert_eq!(ob._asks(), init_book(vec![(399, 9998)]));
+                assert_eq!(ob.min_ask(), Some(399.0));
+                assert_eq!(ob.max_bid(), Some(398.0));
+                assert_eq!(ob._asks(), init_book(vec![(39900000000, 9998)]));
                 assert_eq!(
                     ob._bids(),
-                    init_book(vec![(398, 9997), (395, 9999)])
+                    init_book(vec![(39800000000, 9997), (39500000000, 9999)])
                 );
-                assert_eq!(ob.spread(), Some(1));
+                assert_eq!(ob.spread(), Some(1.0));
             } else {
                 assert_eq!(
                     results,
@@ -920,12 +931,12 @@ mod test {
                         OrderEvent::Placed { id: 0 },
                         OrderEvent::Filled {
                             id: 1,
-                            filled_qty: 2,
+                            filled_qty: 2.0,
                             fills: vec![FillMetadata {
                                 order_1: 1,
                                 order_2: 0,
-                                qty: 2,
-                                price: 395,
+                                qty: 2.0,
+                                price: 395.0,
                                 taker_side: *ask_bid,
                                 total_fill: false,
                             }],
@@ -933,11 +944,11 @@ mod test {
                         OrderEvent::Placed { id: 2 }
                     ]
                 );
-                assert_eq!(ob.min_ask(), Some(395));
+                assert_eq!(ob.min_ask(), Some(395.0));
                 assert_eq!(ob.max_bid(), None);
                 assert_eq!(
                     ob._asks(),
-                    init_book(vec![(398, 9998), (395, 9999)])
+                    init_book(vec![(39800000000, 9998), (39500000000, 9999)])
                 );
                 assert_eq!(ob._bids(), init_book(vec![]));
                 assert_eq!(ob.spread(), None);
@@ -952,27 +963,27 @@ mod test {
                 OrderType::Limit {
                     id: 0,
                     side: *bid_ask,
-                    qty: 12,
-                    price: 395,
+                    qty: 12.0,
+                    price: 395.0,
                 },
                 OrderType::Limit {
                     id: 1,
                     side: *ask_bid,
-                    qty: 2,
-                    price: 399,
+                    qty: 2.0,
+                    price: 399.0,
                 },
                 OrderType::Limit {
                     id: 2,
                     side: *bid_ask,
-                    qty: 2,
-                    price: 398,
+                    qty: 2.0,
+                    price: 398.0,
                 },
             ]);
             let result = ob.execute(OrderType::Limit {
                 id: 3,
                 side: *ask_bid,
-                qty: 1,
-                price: 397,
+                qty: 1.0,
+                price: 397.0,
             });
 
             if *bid_ask == Side::Bid {
@@ -988,25 +999,25 @@ mod test {
                     result,
                     OrderEvent::Filled {
                         id: 3,
-                        filled_qty: 1,
+                        filled_qty: 1.0,
                         fills: vec![FillMetadata {
                             order_1: 3,
                             order_2: 2,
-                            qty: 1,
-                            price: 398,
+                            qty: 1.0,
+                            price: 398.0,
                             taker_side: *ask_bid,
                             total_fill: false,
                         }]
                     }
                 );
-                assert_eq!(ob.min_ask(), Some(399));
-                assert_eq!(ob.max_bid(), Some(398));
-                assert_eq!(ob._asks(), init_book(vec![(399, 9998)]));
+                assert_eq!(ob.min_ask(), Some(399.0));
+                assert_eq!(ob.max_bid(), Some(398.0));
+                assert_eq!(ob._asks(), init_book(vec![(39900000000, 9998)]));
                 assert_eq!(
                     ob._bids(),
-                    init_book(vec![(398, 9997), (395, 9999)])
+                    init_book(vec![(39800000000, 9997), (39500000000, 9999)])
                 );
-                assert_eq!(ob.spread(), Some(1));
+                assert_eq!(ob.spread(), Some(1.0));
             } else {
                 assert_eq!(
                     results,
@@ -1014,12 +1025,12 @@ mod test {
                         OrderEvent::Placed { id: 0 },
                         OrderEvent::Filled {
                             id: 1,
-                            filled_qty: 2,
+                            filled_qty: 2.0,
                             fills: vec![FillMetadata {
                                 order_1: 1,
                                 order_2: 0,
-                                qty: 2,
-                                price: 395,
+                                qty: 2.0,
+                                price: 395.0,
                                 taker_side: *ask_bid,
                                 total_fill: false,
                             }],
@@ -1031,22 +1042,22 @@ mod test {
                     result,
                     OrderEvent::Filled {
                         id: 3,
-                        filled_qty: 1,
+                        filled_qty: 1.0,
                         fills: vec![FillMetadata {
                             order_1: 3,
                             order_2: 0,
-                            qty: 1,
-                            price: 395,
+                            qty: 1.0,
+                            price: 395.0,
                             taker_side: *ask_bid,
                             total_fill: false,
                         }]
                     }
                 );
-                assert_eq!(ob.min_ask(), Some(395));
+                assert_eq!(ob.min_ask(), Some(395.0));
                 assert_eq!(ob.max_bid(), None);
                 assert_eq!(
                     ob._asks(),
-                    init_book(vec![(398, 9998), (395, 9999)])
+                    init_book(vec![(39800000000, 9998), (39500000000, 9999)])
                 );
                 assert_eq!(ob._bids(), init_book(vec![]));
                 assert_eq!(ob.spread(), None);
@@ -1061,27 +1072,27 @@ mod test {
                 OrderType::Limit {
                     id: 0,
                     side: *bid_ask,
-                    qty: 12,
-                    price: 395,
+                    qty: 12.0,
+                    price: 395.0,
                 },
                 OrderType::Limit {
                     id: 1,
                     side: *ask_bid,
-                    qty: 2,
-                    price: 399,
+                    qty: 2.0,
+                    price: 399.0,
                 },
                 OrderType::Limit {
                     id: 2,
                     side: *bid_ask,
-                    qty: 2,
-                    price: 398,
+                    qty: 2.0,
+                    price: 398.0,
                 },
             ]);
             let result = ob.execute(OrderType::Limit {
                 id: 3,
                 side: *ask_bid,
-                qty: 2,
-                price: 397,
+                qty: 2.0,
+                price: 397.0,
             });
 
             if *bid_ask == Side::Bid {
@@ -1097,25 +1108,25 @@ mod test {
                     result,
                     OrderEvent::Filled {
                         id: 3,
-                        filled_qty: 2,
+                        filled_qty: 2.0,
                         fills: vec![FillMetadata {
                             order_1: 3,
                             order_2: 2,
-                            qty: 2,
-                            price: 398,
+                            qty: 2.0,
+                            price: 398.0,
                             taker_side: *ask_bid,
                             total_fill: true,
                         }]
                     }
                 );
-                assert_eq!(ob.min_ask(), Some(399));
-                assert_eq!(ob.max_bid(), Some(395));
-                assert_eq!(ob._asks(), init_book(vec![(399, 9998)]));
+                assert_eq!(ob.min_ask(), Some(399.0));
+                assert_eq!(ob.max_bid(), Some(395.0));
+                assert_eq!(ob._asks(), init_book(vec![(39900000000, 9998)]));
                 assert_eq!(
                     ob._bids(),
-                    init_book_holes(vec![(395, 9999)], vec![398])
+                    init_book_holes(vec![(39500000000, 9999)], vec![39800000000])
                 );
-                assert_eq!(ob.spread(), Some(4));
+                assert_eq!(ob.spread(), Some(4.0));
             } else {
                 assert_eq!(
                     results,
@@ -1123,12 +1134,12 @@ mod test {
                         OrderEvent::Placed { id: 0 },
                         OrderEvent::Filled {
                             id: 1,
-                            filled_qty: 2,
+                            filled_qty: 2.0,
                             fills: vec![FillMetadata {
                                 order_1: 1,
                                 order_2: 0,
-                                qty: 2,
-                                price: 395,
+                                qty: 2.0,
+                                price: 395.0,
                                 taker_side: *ask_bid,
                                 total_fill: false,
                             }],
@@ -1140,22 +1151,22 @@ mod test {
                     result,
                     OrderEvent::Filled {
                         id: 3,
-                        filled_qty: 2,
+                        filled_qty: 2.0,
                         fills: vec![FillMetadata {
                             order_1: 3,
                             order_2: 0,
-                            qty: 2,
-                            price: 395,
+                            qty: 2.0,
+                            price: 395.0,
                             taker_side: *ask_bid,
                             total_fill: false,
                         }]
                     }
                 );
-                assert_eq!(ob.min_ask(), Some(395));
+                assert_eq!(ob.min_ask(), Some(395.0));
                 assert_eq!(ob.max_bid(), None);
                 assert_eq!(
                     ob._asks(),
-                    init_book(vec![(395, 9999), (398, 9998)])
+                    init_book(vec![(39500000000, 9999), (39800000000, 9998)])
                 );
                 assert_eq!(ob._bids(), init_book(vec![]));
                 assert_eq!(ob.spread(), None);
@@ -1170,27 +1181,27 @@ mod test {
                 OrderType::Limit {
                     id: 0,
                     side: *bid_ask,
-                    qty: 12,
-                    price: 395,
+                    qty: 12.0,
+                    price: 395.0,
                 },
                 OrderType::Limit {
                     id: 1,
                     side: *ask_bid,
-                    qty: 2,
-                    price: 399,
+                    qty: 2.0,
+                    price: 399.0,
                 },
                 OrderType::Limit {
                     id: 2,
                     side: *bid_ask,
-                    qty: 2,
-                    price: 398,
+                    qty: 2.0,
+                    price: 398.0,
                 },
             ]);
             let result = ob.execute(OrderType::Limit {
                 id: 3,
                 side: *ask_bid,
-                qty: 5,
-                price: 397,
+                qty: 5.0,
+                price: 397.0,
             });
 
             if *bid_ask == Side::Bid {
@@ -1206,28 +1217,28 @@ mod test {
                     result,
                     OrderEvent::PartiallyFilled {
                         id: 3,
-                        filled_qty: 2,
+                        filled_qty: 2.0,
                         fills: vec![FillMetadata {
                             order_1: 3,
                             order_2: 2,
-                            qty: 2,
-                            price: 398,
+                            qty: 2.0,
+                            price: 398.0,
                             taker_side: *ask_bid,
                             total_fill: true,
                         }]
                     }
                 );
-                assert_eq!(ob.min_ask(), Some(397));
-                assert_eq!(ob.max_bid(), Some(395));
+                assert_eq!(ob.min_ask(), Some(397.0));
+                assert_eq!(ob.max_bid(), Some(395.0));
                 assert_eq!(
                     ob._asks(),
-                    init_book(vec![(399, 9998), (397, 9996)])
+                    init_book(vec![(39900000000, 9998), (39700000000, 9996)])
                 );
                 assert_eq!(
                     ob._bids(),
-                    init_book_holes(vec![(395, 9999)], vec![398])
+                    init_book_holes(vec![(39500000000, 9999)], vec![39800000000])
                 );
-                assert_eq!(ob.spread(), Some(2));
+                assert_eq!(ob.spread(), Some(2.0));
             } else {
                 assert_eq!(
                     results,
@@ -1235,12 +1246,12 @@ mod test {
                         OrderEvent::Placed { id: 0 },
                         OrderEvent::Filled {
                             id: 1,
-                            filled_qty: 2,
+                            filled_qty: 2.0,
                             fills: vec![FillMetadata {
                                 order_1: 1,
                                 order_2: 0,
-                                qty: 2,
-                                price: 395,
+                                qty: 2.0,
+                                price: 395.0,
                                 taker_side: *ask_bid,
                                 total_fill: false,
                             }],
@@ -1252,22 +1263,22 @@ mod test {
                     result,
                     OrderEvent::Filled {
                         id: 3,
-                        filled_qty: 5,
+                        filled_qty: 5.0,
                         fills: vec![FillMetadata {
                             order_1: 3,
                             order_2: 0,
-                            qty: 5,
-                            price: 395,
+                            qty: 5.0,
+                            price: 395.0,
                             taker_side: *ask_bid,
                             total_fill: false,
                         }]
                     }
                 );
-                assert_eq!(ob.min_ask(), Some(395));
+                assert_eq!(ob.min_ask(), Some(395.0));
                 assert_eq!(ob.max_bid(), None);
                 assert_eq!(
                     ob._asks(),
-                    init_book(vec![(395, 9999), (398, 9998)])
+                    init_book(vec![(39500000000, 9999), (39800000000, 9998)])
                 );
                 assert_eq!(ob._bids(), init_book(vec![]));
                 assert_eq!(ob.spread(), None);
@@ -1282,7 +1293,7 @@ mod test {
             let result = ob.execute(OrderType::Market {
                 id: 0,
                 side: *ask_bid,
-                qty: 5,
+                qty: 5.0,
             });
 
             assert_eq!(result, OrderEvent::Unfilled { id: 0 });
@@ -1296,26 +1307,26 @@ mod test {
                 OrderType::Limit {
                     id: 0,
                     side: *bid_ask,
-                    qty: 12,
-                    price: 395,
+                    qty: 12.0,
+                    price: 395.0,
                 },
                 OrderType::Limit {
                     id: 1,
                     side: *ask_bid,
-                    qty: 2,
-                    price: 399,
+                    qty: 2.0,
+                    price: 399.0,
                 },
                 OrderType::Limit {
                     id: 2,
                     side: *bid_ask,
-                    qty: 2,
-                    price: 398,
+                    qty: 2.0,
+                    price: 398.0,
                 },
             ]);
             let result = ob.execute(OrderType::Market {
                 id: 3,
                 side: *ask_bid,
-                qty: 15,
+                qty: 15.0,
             });
 
             if *bid_ask == Side::Bid {
@@ -1331,31 +1342,31 @@ mod test {
                     result,
                     OrderEvent::PartiallyFilled {
                         id: 3,
-                        filled_qty: 14,
+                        filled_qty: 14.0,
                         fills: vec![
                             FillMetadata {
                                 order_1: 3,
                                 order_2: 2,
-                                qty: 2,
-                                price: 398,
+                                qty: 2.0,
+                                price: 398.0,
                                 taker_side: *ask_bid,
                                 total_fill: true,
                             },
                             FillMetadata {
                                 order_1: 3,
                                 order_2: 0,
-                                qty: 12,
-                                price: 395,
+                                qty: 12.0,
+                                price: 395.0,
                                 taker_side: *ask_bid,
                                 total_fill: true,
                             }
                         ]
                     }
                 );
-                assert_eq!(ob.min_ask(), Some(399));
+                assert_eq!(ob.min_ask(), Some(399.0));
                 assert_eq!(ob.max_bid(), None);
-                assert_eq!(ob._asks(), init_book(vec![(399, 9998)]));
-                assert_eq!(ob._bids(), init_book_holes(vec![], vec![395, 398]));
+                assert_eq!(ob._asks(), init_book(vec![(39900000000, 9998)]));
+                assert_eq!(ob._bids(), init_book_holes(vec![], vec![39500000000, 39800000000]));
                 assert_eq!(ob.spread(), None);
             } else {
                 assert_eq!(
@@ -1364,12 +1375,12 @@ mod test {
                         OrderEvent::Placed { id: 0 },
                         OrderEvent::Filled {
                             id: 1,
-                            filled_qty: 2,
+                            filled_qty: 2.0,
                             fills: vec![FillMetadata {
                                 order_1: 1,
                                 order_2: 0,
-                                qty: 2,
-                                price: 395,
+                                qty: 2.0,
+                                price: 395.0,
                                 taker_side: *ask_bid,
                                 total_fill: false,
                             }],
@@ -1381,21 +1392,21 @@ mod test {
                     result,
                     OrderEvent::PartiallyFilled {
                         id: 3,
-                        filled_qty: 12,
+                        filled_qty: 12.0,
                         fills: vec![
                             FillMetadata {
                                 order_1: 3,
                                 order_2: 0,
-                                qty: 10,
-                                price: 395,
+                                qty: 10.0,
+                                price: 395.0,
                                 taker_side: *ask_bid,
                                 total_fill: true,
                             },
                             FillMetadata {
                                 order_1: 3,
                                 order_2: 2,
-                                qty: 2,
-                                price: 398,
+                                qty: 2.0,
+                                price: 398.0,
                                 taker_side: *ask_bid,
                                 total_fill: true,
                             }
@@ -1404,7 +1415,129 @@ mod test {
                 );
                 assert_eq!(ob.min_ask(), None);
                 assert_eq!(ob.max_bid(), None);
-                assert_eq!(ob._asks(), init_book_holes(vec![], vec![395, 398]));
+                assert_eq!(ob._asks(), init_book_holes(vec![], vec![39500000000, 39800000000]));
+                assert_eq!(ob._bids(), init_book(vec![]));
+                assert_eq!(ob.spread(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn market_order_partially_filled_floating_points() {
+        for (bid_ask, ask_bid) in &BID_ASK_COMBINATIONS {
+            let (mut ob, results) = init_ob(vec![
+                OrderType::Limit {
+                    id: 0,
+                    side: *bid_ask,
+                    qty: 12.1357,
+                    price: 395.521,
+                },
+                OrderType::Limit {
+                    id: 1,
+                    side: *ask_bid,
+                    qty: 2.2345,
+                    price: 399.987,
+                },
+                OrderType::Limit {
+                    id: 2,
+                    side: *bid_ask,
+                    qty: 2.789,
+                    price: 398.421,
+                },
+            ]);
+            let result = ob.execute(OrderType::Market {
+                id: 3,
+                side: *ask_bid,
+                qty: 18.931,
+            });
+
+            if *bid_ask == Side::Bid {
+                assert_eq!(
+                    results,
+                    vec![
+                        OrderEvent::Placed { id: 0 },
+                        OrderEvent::Placed { id: 1 },
+                        OrderEvent::Placed { id: 2 }
+                    ]
+                );
+                assert_eq!(
+                    result,
+                    OrderEvent::PartiallyFilled {
+                        id: 3,
+                        filled_qty: 14.9247,
+                        fills: vec![
+                            FillMetadata {
+                                order_1: 3,
+                                order_2: 2,
+                                qty: 2.789,
+                                price: 398.421,
+                                taker_side: *ask_bid,
+                                total_fill: true,
+                            },
+                            FillMetadata {
+                                order_1: 3,
+                                order_2: 0,
+                                qty: 12.1357,
+                                price: 395.521,
+                                taker_side: *ask_bid,
+                                total_fill: true,
+                            }
+                        ]
+                    }
+                );
+                assert_eq!(ob.min_ask(), Some(399.987));
+                assert_eq!(ob.max_bid(), None);
+                assert_eq!(ob._asks(), init_book(vec![(39998700000, 9998)]));
+                assert_eq!(ob._bids(), init_book_holes(vec![], vec![39552100000, 39842100000]));
+                assert_eq!(ob.spread(), None);
+            } else {
+                assert_eq!(
+                    results,
+                    vec![
+                        OrderEvent::Placed { id: 0 },
+                        OrderEvent::Filled {
+                            id: 1,
+                            filled_qty: 2.2345,
+                            fills: vec![FillMetadata {
+                                order_1: 1,
+                                order_2: 0,
+                                qty: 2.2345,
+                                price: 395.521,
+                                taker_side: *ask_bid,
+                                total_fill: false,
+                            }],
+                        },
+                        OrderEvent::Placed { id: 2 }
+                    ]
+                );
+                assert_eq!(
+                    result,
+                    OrderEvent::PartiallyFilled {
+                        id: 3,
+                        filled_qty: 12.6902,
+                        fills: vec![
+                            FillMetadata {
+                                order_1: 3,
+                                order_2: 0,
+                                qty: 9.9012,
+                                price: 395.521,
+                                taker_side: *ask_bid,
+                                total_fill: true,
+                            },
+                            FillMetadata {
+                                order_1: 3,
+                                order_2: 2,
+                                qty: 2.789,
+                                price: 398.421,
+                                taker_side: *ask_bid,
+                                total_fill: true,
+                            }
+                        ]
+                    }
+                );
+                assert_eq!(ob.min_ask(), None);
+                assert_eq!(ob.max_bid(), None);
+                assert_eq!(ob._asks(), init_book_holes(vec![], vec![39552100000, 39842100000]));
                 assert_eq!(ob._bids(), init_book(vec![]));
                 assert_eq!(ob.spread(), None);
             }
@@ -1418,26 +1551,26 @@ mod test {
                 OrderType::Limit {
                     id: 0,
                     side: *bid_ask,
-                    qty: 12,
-                    price: 395,
+                    qty: 12.0,
+                    price: 395.0,
                 },
                 OrderType::Limit {
                     id: 1,
                     side: *ask_bid,
-                    qty: 2,
-                    price: 399,
+                    qty: 2.0,
+                    price: 399.0,
                 },
                 OrderType::Limit {
                     id: 2,
                     side: *bid_ask,
-                    qty: 2,
-                    price: 398,
+                    qty: 2.0,
+                    price: 398.0,
                 },
             ]);
             let result = ob.execute(OrderType::Market {
                 id: 3,
                 side: *ask_bid,
-                qty: 7,
+                qty: 7.0,
             });
 
             if *bid_ask == Side::Bid {
@@ -1453,35 +1586,35 @@ mod test {
                     result,
                     OrderEvent::Filled {
                         id: 3,
-                        filled_qty: 7,
+                        filled_qty: 7.0,
                         fills: vec![
                             FillMetadata {
                                 order_1: 3,
                                 order_2: 2,
-                                qty: 2,
-                                price: 398,
+                                qty: 2.0,
+                                price: 398.0,
                                 taker_side: *ask_bid,
                                 total_fill: true,
                             },
                             FillMetadata {
                                 order_1: 3,
                                 order_2: 0,
-                                qty: 5,
-                                price: 395,
+                                qty: 5.0,
+                                price: 395.0,
                                 taker_side: *ask_bid,
                                 total_fill: false,
                             }
                         ]
                     }
                 );
-                assert_eq!(ob.min_ask(), Some(399));
-                assert_eq!(ob.max_bid(), Some(395));
-                assert_eq!(ob._asks(), init_book(vec![(399, 9998)]));
+                assert_eq!(ob.min_ask(), Some(399.0));
+                assert_eq!(ob.max_bid(), Some(395.0));
+                assert_eq!(ob._asks(), init_book(vec![(39900000000, 9998)]));
                 assert_eq!(
                     ob._bids(),
-                    init_book_holes(vec![(395, 9999)], vec![398])
+                    init_book_holes(vec![(39500000000, 9999)], vec![39800000000])
                 );
-                assert_eq!(ob.spread(), Some(4));
+                assert_eq!(ob.spread(), Some(4.0));
             } else {
                 assert_eq!(
                     results,
@@ -1489,12 +1622,12 @@ mod test {
                         OrderEvent::Placed { id: 0 },
                         OrderEvent::Filled {
                             id: 1,
-                            filled_qty: 2,
+                            filled_qty: 2.0,
                             fills: vec![FillMetadata {
                                 order_1: 1,
                                 order_2: 0,
-                                qty: 2,
-                                price: 395,
+                                qty: 2.0,
+                                price: 395.0,
                                 taker_side: *ask_bid,
                                 total_fill: false,
                             }],
@@ -1506,22 +1639,22 @@ mod test {
                     result,
                     OrderEvent::Filled {
                         id: 3,
-                        filled_qty: 7,
+                        filled_qty: 7.0,
                         fills: vec![FillMetadata {
                             order_1: 3,
                             order_2: 0,
-                            qty: 7,
-                            price: 395,
+                            qty: 7.0,
+                            price: 395.0,
                             taker_side: *ask_bid,
                             total_fill: false,
                         }]
                     }
                 );
-                assert_eq!(ob.min_ask(), Some(395));
+                assert_eq!(ob.min_ask(), Some(395.0));
                 assert_eq!(ob.max_bid(), None);
                 assert_eq!(
                     ob._asks(),
-                    init_book(vec![(395, 9999), (398, 9998)])
+                    init_book(vec![(39500000000, 9999), (39800000000, 9998)])
                 );
                 assert_eq!(ob._bids(), init_book(vec![]));
                 assert_eq!(ob.spread(), None);
@@ -1547,8 +1680,8 @@ mod test {
             let (mut ob, results) = init_ob(vec![OrderType::Limit {
                 id: 0,
                 side: *bid_ask,
-                qty: 12,
-                price: 395,
+                qty: 12.0,
+                price: 395.0,
             }]);
             let result = ob.execute(OrderType::Cancel { id: 0 });
             assert_eq!(results, vec![OrderEvent::Placed { id: 0 }]);
@@ -1557,9 +1690,9 @@ mod test {
             assert_eq!(ob.max_bid(), None);
             if *bid_ask == Side::Bid {
                 assert_eq!(ob._asks(), BTreeMap::new());
-                assert_eq!(ob._bids(), init_book_holes(vec![], vec![395]));
+                assert_eq!(ob._bids(), init_book_holes(vec![], vec![39500000000]));
             } else {
-                assert_eq!(ob._asks(), init_book_holes(vec![], vec![395]));
+                assert_eq!(ob._asks(), init_book_holes(vec![], vec![39500000000]));
                 assert_eq!(ob._bids(), BTreeMap::new());
             }
             assert_eq!(ob.spread(), None);
@@ -1573,20 +1706,20 @@ mod test {
                 OrderType::Limit {
                     id: 0,
                     side: *bid_ask,
-                    qty: 12,
-                    price: 395,
+                    qty: 12.0,
+                    price: 395.0,
                 },
                 OrderType::Limit {
                     id: 1,
                     side: *ask_bid,
-                    qty: 2,
-                    price: 399,
+                    qty: 2.0,
+                    price: 399.0,
                 },
                 OrderType::Limit {
                     id: 2,
                     side: *bid_ask,
-                    qty: 2,
-                    price: 398,
+                    qty: 2.0,
+                    price: 398.0,
                 },
             ]);
             let result = ob.execute(OrderType::Cancel { id: 0 });
@@ -1600,14 +1733,14 @@ mod test {
                     ]
                 );
                 assert_eq!(result, OrderEvent::Canceled { id: 0 });
-                assert_eq!(ob.min_ask(), Some(399));
-                assert_eq!(ob.max_bid(), Some(398));
-                assert_eq!(ob._asks(), init_book(vec![(399, 9998)]));
+                assert_eq!(ob.min_ask(), Some(399.0));
+                assert_eq!(ob.max_bid(), Some(398.0));
+                assert_eq!(ob._asks(), init_book(vec![(39900000000, 9998)]));
                 assert_eq!(
                     ob._bids(),
-                    init_book_holes(vec![(398, 9997)], vec![395])
+                    init_book_holes(vec![(39800000000, 9997)], vec![39500000000])
                 );
-                assert_eq!(ob.spread(), Some(1));
+                assert_eq!(ob.spread(), Some(1.0));
             } else {
                 assert_eq!(
                     results,
@@ -1615,12 +1748,12 @@ mod test {
                         OrderEvent::Placed { id: 0 },
                         OrderEvent::Filled {
                             id: 1,
-                            filled_qty: 2,
+                            filled_qty: 2.0,
                             fills: vec![FillMetadata {
                                 order_1: 1,
                                 order_2: 0,
-                                qty: 2,
-                                price: 395,
+                                qty: 2.0,
+                                price: 395.0,
                                 taker_side: *ask_bid,
                                 total_fill: false,
                             }],
@@ -1629,11 +1762,11 @@ mod test {
                     ]
                 );
                 assert_eq!(result, OrderEvent::Canceled { id: 0 });
-                assert_eq!(ob.min_ask(), Some(398));
+                assert_eq!(ob.min_ask(), Some(398.0));
                 assert_eq!(ob.max_bid(), None);
                 assert_eq!(
                     ob._asks(),
-                    init_book_holes(vec![(398, 9998)], vec![395])
+                    init_book_holes(vec![(39800000000, 9998)], vec![39500000000])
                 );
                 assert_eq!(ob._bids(), init_book(vec![]));
                 assert_eq!(ob.spread(), None);

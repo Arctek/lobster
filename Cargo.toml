@@ -16,7 +16,12 @@ keywords = ["orderbook", "order", "limit", "hft"]
 coveralls = { repository = "rubik/lobster" }
 travis-ci = { repository = "rubik/lobster" }
 
+[lib]
+name = "lobster"
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
+pyo3 = { version = "0.16.4", features = ["extension-module"] }
 
 [dev-dependencies]
 criterion = "0.3"
