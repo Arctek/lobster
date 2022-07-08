@@ -8,8 +8,8 @@ fn small_limit_ladder(c: &mut Criterion) {
             for i in 0..5_000 {
                 ob.execute(OrderType::Limit {
                     id: i as u128,
-                    price: 12345 + i as u64,
-                    qty: i as u64,
+                    price: 12345.0 + (i as f64) / 10.0,
+                    qty: i as f64,
                     side: Side::Bid,
                 });
             }
@@ -24,8 +24,8 @@ fn big_limit_ladder(c: &mut Criterion) {
             for i in 0..100_000 {
                 ob.execute(OrderType::Limit {
                     id: i as u128,
-                    price: 12345 + i as u64,
-                    qty: i as u64,
+                    price: 12345.0 + (i as f64) / 10.0,
+                    qty: i as f64,
                     side: Side::Bid,
                 });
             }

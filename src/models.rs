@@ -106,18 +106,39 @@ pub enum OrderEvent {
 #[pyclass]
 pub struct FillMetadata {
     /// The ID of the order that triggered the fill (taker).
+    #[pyo3(get, set)]
     pub order_1: u128,
     /// The ID of the matching order.
+    #[pyo3(get, set)]
     pub order_2: u128,
     /// The quantity that was traded.
+    #[pyo3(get, set)]
     pub qty: f64,
     /// The price at which the trade happened.
+    #[pyo3(get, set)]
     pub price: f64,
     /// The side of the taker order (order 1)
+    #[pyo3(get, set)]
     pub taker_side: Side,
     /// Whether this order was a total (true) or partial (false) fill of the
     /// maker order.
+    #[pyo3(get, set)]
     pub total_fill: bool,
+}
+
+#[pymethods]
+impl FillMetadata {
+    #[new]
+    fn py_new(
+        order_1: u128,
+        order_2: u128,
+        qty: f64,
+        price: f64,
+        taker_side: Side,
+        total_fill: bool
+        ) -> PyResult<Self> {
+            Ok(FillMetadata { order_1, order_2, qty, price, taker_side, total_fill })
+    }
 }
 
 /// A snapshot of the order book up to a certain depth level. Multiple orders at
@@ -129,11 +150,26 @@ pub struct FillMetadata {
 pub struct BookDepth {
     /// The requested level. This field will always contain the level that was
     /// requested, even if some or all levels are empty.
+    #[pyo3(get, set)]
     pub levels: usize,
     /// A vector of price points with the associated quantity on the ask side.
+    #[pyo3(get, set)]
     pub asks: Vec<BookLevel>,
     /// A vector of price points with the associated quantity on the bid side.
+    #[pyo3(get, set)]
     pub bids: Vec<BookLevel>,
+}
+
+#[pymethods]
+impl BookDepth {
+    #[new]
+    fn py_new(
+        levels: usize,
+        asks: Vec<BookLevel>,
+        bids: Vec<BookLevel>
+        ) -> PyResult<Self> {
+            Ok(BookDepth { levels, asks, bids })
+    }
 }
 
 /// A single level in the order book. This struct is used both for the bid and
@@ -142,9 +178,22 @@ pub struct BookDepth {
 #[pyclass]
 pub struct BookLevel {
     /// The price point this level represents.
+    #[pyo3(get, set)]
     pub price: f64,
     /// The total quantity of all orders resting at the specified price point.
+    #[pyo3(get, set)]
     pub qty: f64,
+}
+
+#[pymethods]
+impl BookLevel {
+    #[new]
+    fn py_new(
+        price: f64,
+        qty: f64
+        ) -> PyResult<Self> {
+            Ok(BookLevel { price, qty })
+    }
 }
 
 /// A trade that happened as part of the matching process.
@@ -152,18 +201,34 @@ pub struct BookLevel {
 #[pyclass]
 pub struct Trade {
     /// The total quantity transacted as part of this trade.
+    #[pyo3(get, set)]
     pub total_qty: f64,
     /// The volume-weighted average price computed from all the order fills
     /// within this trade.
+    #[pyo3(get, set)]
     pub avg_price: f64,
     /// The price of the last fill that was part of this trade.
+    #[pyo3(get, set)]
     pub last_price: f64,
     /// The quantity of the last fill that was part of this trade.
+    #[pyo3(get, set)]
     pub last_qty: f64,
 }
 
+#[pymethods]
+impl Trade {
+    #[new]
+    fn py_new(
+        total_qty: f64,
+        avg_price: f64,
+        last_price: f64,
+        last_qty: f64
+        ) -> PyResult<Self> {
+            Ok(Trade { total_qty, avg_price, last_price, last_qty })
+    }
+}
+
 #[derive(Debug, PartialEq)]
-#[pyclass]
 pub struct LimitOrder {
     pub id: u128,
     pub qty: f64,

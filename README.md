@@ -3,7 +3,7 @@
 </div>
 
 <div align="center">
-  <h1>Lobster</h1>
+  <h1>Lobster (now with Python)</h1>
   <p>A fast in-memory limit order book (LOB).</p>
   <a target="_blank" href="https://travis-ci.org/rubik/lobster">
     <img src="https://img.shields.io/travis/rubik/lobster?style=for-the-badge" alt="Build">
@@ -30,24 +30,24 @@ orders for execution:
 use lobster::{FillMetadata, OrderBook, OrderEvent, OrderType, Side};
 
 let mut ob = OrderBook::default();
-let event = ob.execute(OrderType::Market { id: 0, qty: 1, side: Side::Bid });
+let event = ob.execute(OrderType::Market { id: 0, qty: 1.0, side: Side::Bid });
 assert_eq!(event, OrderEvent::Unfilled { id: 0 });
 
-let event = ob.execute(OrderType::Limit { id: 1, price: 120, qty: 3, side: Side::Ask });
+let event = ob.execute(OrderType::Limit { id: 1, price: 120.0, qty: 3.0, side: Side::Ask });
 assert_eq!(event, OrderEvent::Placed { id: 1 });
 
-let event = ob.execute(OrderType::Market { id: 2, qty: 4, side: Side::Bid });
+let event = ob.execute(OrderType::Market { id: 2, qty: 4.0, side: Side::Bid });
 assert_eq!(
     event,
     OrderEvent::PartiallyFilled {
         id: 2,
-        filled_qty: 3,
+        filled_qty: 3.0,
         fills: vec![
             FillMetadata {
                 order_1: 2,
                 order_2: 1,
-                qty: 3,
-                price: 120,
+                qty: 3.0,
+                price: 120.0,
                 taker_side: Side::Bid,
                 total_fill: true,
             }
@@ -56,47 +56,62 @@ assert_eq!(
 );
 ```
 
-Lobster only deals in integer price points and quantities. Prices and
-quantities are represented as unsigned 64-bit integers. If the traded
-instrument supports fractional prices and quantities, the conversion needs to
-be handled by the user. At this time, Lobster does not support negative prices.
+```python
+import unittest
+from lobster import FillMetadata, OrderBook, Order, OrderType, OrderEvent, OrderEventType, Side
 
-More information can be found in the [documentation](https://docs.rs/lobster).
+def order_event_equality(first, second, msg):
+    passed = first.id == second.id and\
+             first.filled_qty == second.filled_qty and\
+             first.event_type == second.event_type and\
+             len(first.fills) == len(second.fills)
 
-# Quantcup
-The winning quantcup submission is at the moment up to 10x faster than Lobster.
-While Lobster can surely be improved significantly, some design choices by
-necessity make it slower. Here's a non-exhaustive list:
+    if first.event_type == OrderEventType.PartiallyFilled or\
+       first.event_type == OrderEventType.Filled:
+        for i in range(0, len(first.fills)):
+            passed = passed and\
+                     first.fills[i].order_1 == second.fills[i].order_1 and\
+                     first.fills[i].order_2 == second.fills[i].order_2 and\
+                     first.fills[i].qty == second.fills[i].qty and\
+                     first.fills[i].price == second.fills[i].price and\
+                     first.fills[i].side == second.fills[i].side and\
+                     first.fills[i].total_fill == second.fills[i].total_fill
 
-1. The Quantcup solution holds all the possible price points in memory, whereas
-   Lobster uses two BTreeMap structs that hold price points on demand. The
-   performance boost of holding all the price points in a contiguous data
-   structure on the stack is massive, but it's not very practical: the array is
-   indexed by the price, so it can be huge (imagine implementing an order book
-   for forex markets with integer price points at all non-fractional values);
-   in reality limit orders can be made at any price, and in most markets there
-   is no upper bound, so the static array solution is not viable.
+test_case = unittest.TestCase()
+test_case.addTypeEqualityFunc(OrderEvent, order_event_equality)
 
-2. The Quantcup solution does not update the max bid/min ask values when
-   canceling orders. So if an order at the best bid/ask is canceled, that
-   solution will not be correct. To be fair, this is pretty trivial to fix, but
-   nonetheless it wasn't done in the benchmarked winning solution.
+ob = OrderBook.default()
+event = ob.execute(Order(id=0, price=0.0, qty=1.0, side=Side.Bid, order_type=OrderType.Market))
+test_case.assertEqual(event, OrderEvent(id=0, filled_qty=0.0, fills=[], event_type=OrderEventType.Unfilled))
 
-3. The Quantcup solution does not accept external order IDs; instead it
-   provides them as integer indices from a static array. This has obvious
-   practical consequences: the order book can handle a maximum number of open
-   orders, and that number is chosen at compile time. Furthermore, if order IDs
-   are not known to the sender before executing the order, it's difficult to
-   broadcast the events to the right sender. Lobster supports unsigned 128-bit
-   integers as order IDs, which can thus contain v4 UUIDs.
+event = ob.execute(Order(id=1, price=120.0, qty=3.0, side=Side.Ask, order_type=OrderType.Limit))
+test_case.assertEqual(event, OrderEvent(id=1, filled_qty=0.0, fills=[], event_type=OrderEventType.Placed))
 
-# Todo
-1. Remove `OrderBook::update_min_ask` and `OrderBook::update_max_bid` and
-   instead update the min ask/max bid values only when needed. Currently those
-   methods are called on every order execution, and flamegraph analysis
-   confirms that they are the main bottleneck.
-2. Experiment with replacing `BTreeMap`s with Trie from
-   [`qp_trie`](https://github.com/sdleffler/qp-trie-rs).
+event = ob.execute(Order(id=2, price=0.0, qty=4.0, side=Side.Bid, order_type=OrderType.Market))
+test_case.assertEqual(event, OrderEvent(
+    id=1,
+    filled_qty=3.0,
+    fills=[
+        FillMetadata(
+            order_1=2,
+            order_2=1,
+            qty=3.0,
+            price=120.0,
+            taker_side=Side.Bid,
+            total_fill=True
+        )
+    ],
+    event_type=OrderEventType.PartiallyFilled
+))
+```
+
+This fork of Lobster handles floating points for prices and quantities.
+Price points are stored in a discrete fashion internally so there is a
+conversion to a shifted unsigned 64-bit integer for referencing the BTreeMaps,
+this is 8 significant digits by default but can be changed.
+
+Support has been added for python bindings, using PyO3. In tests it's
+approximately 2.5x as slow as pure rust.
 
 <div>
   <small>
