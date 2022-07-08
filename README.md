@@ -11,9 +11,6 @@
   <a target="_blank" href="https://coveralls.io/github/Arctek/lobster">
     <img src="https://img.shields.io/coveralls/github/Arctek/lobster?style=for-the-badge" alt="Code Coverage">
   </a>
-  <a target="_blank" href="https://crates.io/crates/lobster">
-   <img src="https://img.shields.io/crates/d/lobster?style=for-the-badge" alt="Downloads (all time)">
-  <a>
   <a href="https://github.com/Arctek/lobster/blob/master/LICENSE">
     <img src="https://img.shields.io/crates/l/lobster?style=for-the-badge" alt="ISC License">
   </a>
