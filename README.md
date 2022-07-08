@@ -1,20 +1,20 @@
 <div align="center">
-  <img alt="Lobster logo" src="https://github.com/rubik/lobster/raw/master/images/logo.png" height="130" />
+  <img alt="Lobster logo" src="https://github.com/Arctek/lobster/raw/master/images/logo.png" height="130" />
 </div>
 
 <div align="center">
   <h1>Lobster (now with Python)</h1>
   <p>A fast in-memory limit order book (LOB).</p>
-  <a target="_blank" href="https://travis-ci.org/rubik/lobster">
-    <img src="https://img.shields.io/travis/rubik/lobster?style=for-the-badge" alt="Build">
+  <a target="_blank" href="https://travis-ci.org/Arctek/lobster">
+    <img src="https://img.shields.io/travis/Arctek/lobster?style=for-the-badge" alt="Build">
   </a>
-  <a target="_blank" href="https://coveralls.io/github/rubik/lobster">
-    <img src="https://img.shields.io/coveralls/github/rubik/lobster?style=for-the-badge" alt="Code Coverage">
+  <a target="_blank" href="https://coveralls.io/github/Arctek/lobster">
+    <img src="https://img.shields.io/coveralls/github/Arctek/lobster?style=for-the-badge" alt="Code Coverage">
   </a>
   <a target="_blank" href="https://crates.io/crates/lobster">
    <img src="https://img.shields.io/crates/d/lobster?style=for-the-badge" alt="Downloads (all time)">
   <a>
-  <a href="https://github.com/rubik/lobster/blob/master/LICENSE">
+  <a href="https://github.com/Arctek/lobster/blob/master/LICENSE">
     <img src="https://img.shields.io/crates/l/lobster?style=for-the-badge" alt="ISC License">
   </a>
   <br>
@@ -108,7 +108,7 @@ test_case.assertEqual(event, OrderEvent(
 This fork of Lobster handles floating points for prices and quantities.
 Price points are stored in a discrete fashion internally so there is a
 conversion to a shifted unsigned 64-bit integer for referencing the BTreeMaps,
-this is 8 significant digits by default but can be changed.
+this is to 8 significant digits by default but can be changed.
 
 Support has been added for python bindings, using PyO3. In tests it's
 approximately 2.5x as slow as pure rust.
